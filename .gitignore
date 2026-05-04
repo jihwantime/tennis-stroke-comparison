@@ -1,0 +1,24 @@
+# Raw video files — keep out of git, store locally only
+data/raw/*
+!data/raw/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Notebook outputs (optional — uncomment if you want to strip)
+# *.ipynb
+.DS_Store
