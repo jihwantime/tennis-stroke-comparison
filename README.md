@@ -1,20 +1,16 @@
-# tennis-stroke-compare
+# tennis-stroke-comparison
 
-Side-by-side stick-figure comparison of tennis strokes, time-aligned at ball contact. Drop in a clip of a pro and a clip of yourself, scrub a synchronized slider, and see exactly how the two motions diverge before and after impact.
+Stick-figure stroke comparisons for tennis. Could and should work for anything else that involves hitting something with a racket probably. 
 
 ## Why
 
-Tools like Coaches Eye let you compare swings frame-by-frame, but they're tied to phone apps and proprietary formats. This is an open, scriptable version: pose extraction in Python, an HTML viewer that runs anywhere, and JSON data you actually own.
+I physcially cannot grasp the biomechanics of a serve so maybe this can help me with stuff like the racket drop. My backhand also sucks. 
 
 ## How it works
 
 1. **Extract** — `src/extract_poses.py` runs MediaPipe pose estimation on a video clip and writes joint coordinates per frame to JSON.
 2. **Normalize** — `src/normalize.py` re-centers each skeleton on its hip midpoint, scales by torso length so heights match, and re-indexes frames so contact = frame 0.
 3. **View** — `viewer/index.html` loads two normalized JSONs and renders both skeletons side by side with a synchronized slider centered on contact.
-
-## Status
-
-Early development. See [roadmap](#roadmap) below.
 
 ## Setup
 

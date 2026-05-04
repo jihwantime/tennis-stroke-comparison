@@ -4,7 +4,7 @@
 Original video clips. **Gitignored** — these are large, often not redistributable, and reproducible from source.
 
 Naming convention: `{player}_{stroke}_{angle}.mp4`
-- e.g. `federer_fh_back.mp4`, `me_fh_back.mp4`
+- e.g. `jannik_fh_back.mp4`, `me_fh_back.mp4`
 
 ## `poses/`
 Extracted joint coordinate JSONs, one per video clip. **Committed to git** — these are small, derived artifacts that the viewer needs.
