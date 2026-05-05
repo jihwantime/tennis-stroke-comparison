@@ -25,3 +25,6 @@ Thumbs.db
 
 # Model files (downloaded separately, big)
 models/
+
+# Debug video output
+*.debug.mp4
