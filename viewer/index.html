@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tennis Stroke Comparison</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #0d1014;
+    --panel: #14171c;
+    --line: #20252d;
+    --text: #d8dde6;
+    --muted: #5c6470;
+    --accent: #ff6b35;
+    --player-a: #4fc3f7;
+    --player-b: #ffd166;
+    --joint: #ffffff;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  .app {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    height: 100vh;
+  }
+
+  /* ===== Stage with two video panes ===== */
+  .stage {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    overflow: hidden;
+    position: relative;
+    background: #000;
+  }
+  .stage::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 0; bottom: 0;
+    width: 1px;
+    background: var(--line);
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  .player-pane {
+    position: relative;
+    overflow: hidden;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Video and overlay canvas occupy the same space */
+  .pane-content {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .pane-video, .pane-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  .pane-canvas { pointer-events: none; }
+  .pane-video { display: none; }
+  .pane-video.loaded { display: block; }
+
+  .player-name {
+    position: absolute;
+    top: 16px;
+    left: 20px;
+    z-index: 3;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+    pointer-events: none;
+    text-shadow: 0 0 8px rgba(0,0,0,0.8);
+  }
+  .player-pane.a .player-name { color: var(--player-a); }
+  .player-pane.b .player-name { color: var(--player-b); }
+
+  .load-controls {
+    position: absolute;
+    top: 16px;
+    right: 20px;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-end;
+  }
+  .load-link {
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    cursor: pointer;
+    background: rgba(0,0,0,0.5);
+    border: none;
+    padding: 4px 8px;
+    border-radius: 2px;
+    font-family: var(--mono);
+    backdrop-filter: blur(4px);
+  }
+  .load-link:hover { color: var(--text); }
+  .load-link.loaded { color: var(--text); opacity: 0.7; }
+  input[type="file"] { display: none; }
+
+  .empty-hint {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-align: center;
+    line-height: 2;
+  }
+  .empty-hint .step { display: block; }
+  .empty-hint .num { color: var(--accent); margin-right: 8px; }
+  .empty-hint .done { color: var(--text); }
+
+  /* ===== Controls ===== */
+  .controls {
+    padding: 18px 24px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+  }
+
+  .slider-row {
+    position: relative;
+    height: 28px;
+    margin-bottom: 12px;
+  }
+  .slider-row::before {
+    content: "";
+    position: absolute;
+    left: 0; right: 0;
+    top: 50%;
+    height: 1px;
+    background: var(--line);
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+  .contact-tick {
+    position: absolute;
+    left: 50%;
+    top: 30%;
+    bottom: 30%;
+    width: 1px;
+    background: var(--accent);
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
+  .scrubber {
+    position: absolute;
+    left: 0; right: 0;
+    top: 0; bottom: 0;
+    width: 100%;
+    appearance: none;
+    background: transparent;
+    cursor: ew-resize;
+    margin: 0;
+  }
+  .scrubber:disabled { cursor: not-allowed; opacity: 0.3; }
+  .scrubber::-webkit-slider-runnable-track { height: 28px; background: transparent; }
+  .scrubber::-moz-range-track { height: 28px; background: transparent; border: none; }
+  .scrubber::-webkit-slider-thumb {
+    appearance: none;
+    width: 2px;
+    height: 28px;
+    background: var(--text);
+    cursor: ew-resize;
+    margin-top: 0;
+  }
+  .scrubber::-moz-range-thumb {
+    width: 2px;
+    height: 28px;
+    background: var(--text);
+    cursor: ew-resize;
+    border: none;
+  }
+  .scrubber:focus { outline: none; }
+
+  .control-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 24px;
+  }
+  .left-controls, .right-controls {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .ctrl-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    padding: 4px 0;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .ctrl-btn:hover:not(:disabled) { color: var(--text); }
+  .ctrl-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .ctrl-btn.primary { color: var(--text); min-width: 50px; text-align: left; }
+  .speed-select {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    padding: 4px 0;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 11px;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  .speed-select:hover { color: var(--text); border-bottom-color: var(--text); }
+  .speed-select:focus { outline: none; }
+
+  .toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  .toggle input { display: none; }
+  .toggle .swatch {
+    width: 22px;
+    height: 12px;
+    background: var(--line);
+    border-radius: 6px;
+    position: relative;
+    transition: background 0.15s;
+  }
+  .toggle .swatch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 8px;
+    height: 8px;
+    background: var(--muted);
+    border-radius: 50%;
+    transition: transform 0.15s, background 0.15s;
+  }
+  .toggle input:checked + .swatch { background: var(--accent); }
+  .toggle input:checked + .swatch::after { transform: translateX(10px); background: #fff; }
+  .toggle:hover { color: var(--text); }
+
+  .timecode {
+    font-size: 22px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .timecode .sign { color: var(--muted); display: inline-block; width: 0.6em; }
+  .timecode .unit { color: var(--muted); font-size: 11px; margin-left: 6px; letter-spacing: 0.1em; }
+  .timecode.at-contact { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="stage">
+    <div class="player-pane a" id="pane-a">
+      <div class="player-name" id="name-a"></div>
+      <div class="load-controls">
+        <button class="load-link" id="load-a-video-btn">load video</button>
+        <input type="file" id="load-a-video" accept="video/*">
+        <button class="load-link" id="load-a-json-btn">load json</button>
+        <input type="file" id="load-a-json" accept=".json">
+      </div>
+      <div class="pane-content" id="content-a">
+        <div class="empty-hint" id="empty-a">
+          <span class="step"><span class="num">1.</span>load video</span>
+          <span class="step"><span class="num">2.</span>load json</span>
+        </div>
+        <video class="pane-video" id="video-a" muted playsinline preload="auto"></video>
+        <canvas class="pane-canvas" id="canvas-a"></canvas>
+      </div>
+    </div>
+    <div class="player-pane b" id="pane-b">
+      <div class="player-name" id="name-b"></div>
+      <div class="load-controls">
+        <button class="load-link" id="load-b-video-btn">load video</button>
+        <input type="file" id="load-b-video" accept="video/*">
+        <button class="load-link" id="load-b-json-btn">load json</button>
+        <input type="file" id="load-b-json" accept=".json">
+      </div>
+      <div class="pane-content" id="content-b">
+        <div class="empty-hint" id="empty-b">
+          <span class="step"><span class="num">1.</span>load video</span>
+          <span class="step"><span class="num">2.</span>load json</span>
+        </div>
+        <video class="pane-video" id="video-b" muted playsinline preload="auto"></video>
+        <canvas class="pane-canvas" id="canvas-b"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="slider-row">
+      <div class="contact-tick"></div>
+      <input type="range" class="scrubber" id="scrubber" min="-1000" max="1000" step="1" value="0" disabled>
+    </div>
+
+    <div class="control-bar">
+      <div class="left-controls">
+        <button class="ctrl-btn primary" id="play-pause" disabled>play</button>
+        <button class="ctrl-btn" id="step-back" disabled>◀</button>
+        <button class="ctrl-btn" id="step-forward" disabled>▶</button>
+        <button class="ctrl-btn" id="reset" disabled>contact</button>
+        <select class="speed-select" id="speed">
+          <option value="0.125">0.125×</option>
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+        </select>
+      </div>
+
+      <div class="right-controls">
+        <label class="toggle">
+          <input type="checkbox" id="overlay-toggle" checked>
+          <span class="swatch"></span>
+          <span>overlay</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="racquet-toggle" checked>
+          <span class="swatch"></span>
+          <span>racquet</span>
+        </label>
+        <div class="timecode" id="timecode">
+          <span class="sign" id="tc-sign"></span><span id="tc-value">0</span><span class="unit">ms</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ============================================================================
+// Skeleton edges, identical to the Python script
+// ============================================================================
+const EDGES = [
+  ["left_shoulder", "right_shoulder"],
+  ["left_shoulder", "left_elbow"],
+  ["left_elbow", "left_wrist"],
+  ["right_shoulder", "right_elbow"],
+  ["right_elbow", "right_wrist"],
+  ["left_shoulder", "left_hip"],
+  ["right_shoulder", "right_hip"],
+  ["left_hip", "right_hip"],
+  ["left_hip", "left_knee"],
+  ["left_knee", "left_ankle"],
+  ["right_hip", "right_knee"],
+  ["right_knee", "right_ankle"],
+];
+const HEAD_KEYPOINT = "nose";
+const VISIBILITY_THRESHOLD = 0.3;
+
+// How far past the wrist to extend the racquet line, in units of forearm length.
+// Forearm ≈ elbow→wrist, racquet ≈ 1.5× forearm length on average.
+const RACQUET_EXTENSION = 1.6;
+
+const COLORS = {
+  a: { skeleton: "#4fc3f7", joint: "#ffffff", racquet: "#4fc3f7" },
+  b: { skeleton: "#ffd166", joint: "#ffffff", racquet: "#ffd166" },
+};
+
+// ============================================================================
+// State
+// ============================================================================
+const state = {
+  a: { video: null, data: null, ready: false },
+  b: { video: null, data: null, ready: false },
+  currentTimeMs: 0,
+  windowMs: 1000,
+  playing: false,
+  playbackRate: 1.0,
+  lastFrameTimestamp: null,
+  showOverlay: true,
+  showRacquet: true,
+};
+
+// ============================================================================
+// Loading
+// ============================================================================
+async function loadJsonFile(file) {
+  const text = await file.text();
+  const data = JSON.parse(text);
+  if (!data.metadata || !Array.isArray(data.frames)) {
+    throw new Error("Invalid JSON: expected {metadata, frames}");
+  }
+  if (data.metadata.normalized) {
+    throw new Error("Use the raw JSON (not normalized) for video overlay mode.");
+  }
+  if (data.frames.length === 0) throw new Error("JSON has no frames.");
+  return data;
+}
+
+function loadVideoFile(slot, file) {
+  const video = document.getElementById(`video-${slot}`);
+  // Revoke previous object URL if any to avoid memory leak
+  if (video.src && video.src.startsWith("blob:")) {
+    URL.revokeObjectURL(video.src);
+  }
+  const url = URL.createObjectURL(file);
+  return new Promise((resolve, reject) => {
+    video.onloadedmetadata = () => {
+      video.classList.add("loaded");
+      resolve(video);
+    };
+    video.onerror = () => reject(new Error("Failed to load video"));
+    video.src = url;
+  });
+}
+
+function checkSlotReady(slot) {
+  const s = state[slot];
+  s.ready = !!(s.video && s.data);
+  if (s.ready) {
+    document.getElementById(`empty-${slot}`).style.display = "none";
+    const player = s.data.metadata.player || "unknown";
+    document.getElementById(`name-${slot}`).textContent = player;
+    resizeCanvas(slot);
+    syncVideo(slot);
+  }
+  updateGlobalReady();
+}
+
+function updateGlobalReady() {
+  const anyReady = state.a.ready || state.b.ready;
+  // Slider/buttons enable as soon as at least one slot is ready;
+  // only-one-slot is fine, the other pane just stays black
+  document.getElementById("scrubber").disabled = !anyReady;
+  for (const id of ["play-pause", "step-back", "step-forward", "reset"]) {
+    document.getElementById(id).disabled = !anyReady;
+  }
+  if (anyReady) {
+    updateTimeWindow();
+    render();
+  }
+}
+
+function updateTimeWindow() {
+  const ranges = [];
+  for (const slot of ["a", "b"]) {
+    if (!state[slot].ready) continue;
+    const t = state[slot].data.frames.map(f => f.time_ms);
+    ranges.push({ min: Math.min(...t), max: Math.max(...t) });
+  }
+  if (!ranges.length) return;
+  const minT = Math.max(...ranges.map(r => r.min));
+  const maxT = Math.min(...ranges.map(r => r.max));
+  const half = Math.min(Math.abs(minT), Math.abs(maxT));
+  state.windowMs = Math.max(half, 200);
+
+  const sc = document.getElementById("scrubber");
+  sc.min = -state.windowMs;
+  sc.max = state.windowMs;
+  sc.value = state.currentTimeMs;
+}
+
+// ============================================================================
+// Time → frame → video.currentTime mapping
+// ============================================================================
+function jointsAtTime(data, timeMs) {
+  const frames = data.frames;
+  if (timeMs <= frames[0].time_ms) return frames[0];
+  if (timeMs >= frames[frames.length - 1].time_ms) return frames[frames.length - 1];
+  let lo = 0, hi = frames.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (frames[mid].time_ms <= timeMs) lo = mid;
+    else hi = mid;
+  }
+  // Pick whichever bracketing frame is closer in time. We don't interpolate
+  // joint coordinates here because we want them to match the actual displayed
+  // video frame — interpolated joints would float between video frames.
+  const a = frames[lo], b = frames[hi];
+  return Math.abs(timeMs - a.time_ms) <= Math.abs(timeMs - b.time_ms) ? a : b;
+}
+
+function syncVideo(slot) {
+  const s = state[slot];
+  if (!s.ready) return;
+  const meta = s.data.metadata;
+  // The contact frame in the original video is at time (contact_frame / fps) seconds.
+  // For a slider position of currentTimeMs, the corresponding video time is:
+  //   contact_time + currentTimeMs/1000
+  const contactSec = meta.contact_frame / meta.fps;
+  const targetSec = contactSec + state.currentTimeMs / 1000;
+  // Clamp into video bounds
+  const clamped = Math.max(0, Math.min(s.video.duration || 1e9, targetSec));
+  // Avoid setting currentTime if the difference is below one frame — reduces
+  // unnecessary seeks during playback
+  if (Math.abs(s.video.currentTime - clamped) > (1 / meta.fps) * 0.5) {
+    s.video.currentTime = clamped;
+  }
+}
+
+// ============================================================================
+// Canvas overlay rendering
+// ============================================================================
+function resizeCanvas(slot) {
+  const s = state[slot];
+  if (!s.video) return;
+  const canvas = document.getElementById(`canvas-${slot}`);
+  // The video element has object-fit: contain, so the actual display area
+  // is letterboxed. We need to match the canvas pixel space to that.
+  const rect = canvas.getBoundingClientRect();
+  // Use device pixel ratio for crisp lines on retina displays
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function getDisplayedVideoRect(video, canvas) {
+  // Compute the actual pixel rectangle the video occupies inside its element,
+  // accounting for object-fit: contain (letterboxing).
+  const cw = canvas.getBoundingClientRect().width;
+  const ch = canvas.getBoundingClientRect().height;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return { x: 0, y: 0, w: cw, h: ch, scaleX: 1, scaleY: 1 };
+  const scale = Math.min(cw / vw, ch / vh);
+  const dispW = vw * scale;
+  const dispH = vh * scale;
+  return {
+    x: (cw - dispW) / 2,
+    y: (ch - dispH) / 2,
+    w: dispW,
+    h: dispH,
+    scaleX: scale,
+    scaleY: scale,
+  };
+}
+
+function drawSkeleton(slot) {
+  const s = state[slot];
+  const canvas = document.getElementById(`canvas-${slot}`);
+  const ctx = canvas.getContext("2d");
+  const rect = canvas.getBoundingClientRect();
+  ctx.clearRect(0, 0, rect.width, rect.height);
+
+  if (!s.ready || !state.showOverlay) return;
+
+  // Look up joints from THIS video's currentTime so the skeleton stays in
+  // perfect sync with the displayed frame, even if the slider polling has
+  // drifted slightly during playback.
+  const ms = msFromVideoTime(slot, s.video.currentTime);
+  const frame = jointsAtTime(s.data, ms);
+  const joints = frame.joints;
+  if (!joints) return;
+
+  // Project joint coords (which are in original video pixel space) to the
+  // displayed video rectangle on canvas.
+  const v = getDisplayedVideoRect(s.video, canvas);
+  const project = (j) => ({
+    x: v.x + j.x * v.scaleX,
+    y: v.y + j.y * v.scaleY,
+  });
+
+  const colors = COLORS[slot];
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  // Skeleton edges
+  ctx.strokeStyle = colors.skeleton;
+  ctx.lineWidth = 3;
+  for (const [a, b] of EDGES) {
+    const ja = joints[a], jb = joints[b];
+    if (!ja || !jb) continue;
+    if (ja.visibility < VISIBILITY_THRESHOLD || jb.visibility < VISIBILITY_THRESHOLD) continue;
+    const pa = project(ja), pb = project(jb);
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+  }
+
+  // Head circle
+  const head = joints[HEAD_KEYPOINT];
+  if (head && head.visibility >= VISIBILITY_THRESHOLD) {
+    const ph = project(head);
+    // Estimate head radius from distance between shoulders
+    const ls = joints.left_shoulder, rs = joints.right_shoulder;
+    let r = 12;
+    if (ls && rs) {
+      const pls = project(ls), prs = project(rs);
+      const shoulderWidth = Math.hypot(prs.x - pls.x, prs.y - pls.y);
+      r = shoulderWidth * 0.45;
+    }
+    ctx.beginPath();
+    ctx.arc(ph.x, ph.y - r * 0.4, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Joint dots
+  ctx.fillStyle = colors.joint;
+  for (const name in joints) {
+    if (name === HEAD_KEYPOINT) continue;
+    const j = joints[name];
+    if (j.visibility < VISIBILITY_THRESHOLD) continue;
+    const p = project(j);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Racquet line: extend from elbow→wrist beyond the wrist
+  if (state.showRacquet) {
+    const handedness = s.data.metadata.handedness || "right";
+    const wristKey = `${handedness}_wrist`;
+    const elbowKey = `${handedness}_elbow`;
+    const w = joints[wristKey], e = joints[elbowKey];
+    if (w && e && w.visibility >= VISIBILITY_THRESHOLD && e.visibility >= VISIBILITY_THRESHOLD) {
+      const pw = project(w), pe = project(e);
+      const dx = pw.x - pe.x;
+      const dy = pw.y - pe.y;
+      const tipX = pw.x + dx * RACQUET_EXTENSION;
+      const tipY = pw.y + dy * RACQUET_EXTENSION;
+      ctx.strokeStyle = colors.racquet;
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.7;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pw.x, pw.y);
+      ctx.lineTo(tipX, tipY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      // Small circle at racquet tip
+      ctx.fillStyle = colors.racquet;
+      ctx.beginPath();
+      ctx.arc(tipX, tipY, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function render() {
+  // This is called on manual scrub (slider drag, step buttons, reset).
+  // It seeks each video and redraws the overlay. During playback, the video
+  // plays natively and we don't seek — see playbackLoop().
+  for (const slot of ["a", "b"]) {
+    if (state[slot].ready) {
+      syncVideo(slot);
+      drawSkeleton(slot);
+    }
+  }
+  updateTimecode();
+}
+
+// ============================================================================
+// Playback
+// ============================================================================
+// Strategy:
+// - When playing, we call video.play() on each ready video at the chosen rate
+//   and let the browser play it natively. This is fast and smooth — unlike
+//   seeking via currentTime= 60 times per second, which the browser hates.
+// - A polling loop watches the "primary" video (slot a, falling back to b)
+//   and updates the slider/timecode/secondary-video to follow. We don't try
+//   to keep the two videos in lockstep at the millisecond level — we use the
+//   primary's currentTime to compute time-from-contact, then sync the
+//   secondary's currentTime to match. Tiny drift is fine; the slider position
+//   reflects the primary's actual playback time.
+// - When playback runs past the end of the window (or end of clip), we pause,
+//   loop back to start of window, and restart.
+
+function primarySlot() {
+  return state.a.ready ? "a" : (state.b.ready ? "b" : null);
+}
+
+function videoTimeFromMs(slot, ms) {
+  // Convert ms-from-contact to absolute video time (seconds) for this slot.
+  const meta = state[slot].data.metadata;
+  return (meta.contact_frame / meta.fps) + ms / 1000;
+}
+
+function msFromVideoTime(slot, sec) {
+  const meta = state[slot].data.metadata;
+  return (sec - meta.contact_frame / meta.fps) * 1000;
+}
+
+function setPlaying(p) {
+  state.playing = p;
+  document.getElementById("play-pause").textContent = p ? "pause" : "play";
+
+  for (const slot of ["a", "b"]) {
+    const s = state[slot];
+    if (!s.ready) continue;
+    if (p) {
+      s.video.playbackRate = state.playbackRate;
+      // Restart from beginning of window if we're at the end
+      if (state.currentTimeMs >= state.windowMs - 5) {
+        state.currentTimeMs = -state.windowMs;
+        s.video.currentTime = videoTimeFromMs(slot, state.currentTimeMs);
+      }
+      s.video.play().catch(err => console.warn(`play(${slot}) failed:`, err));
+    } else {
+      s.video.pause();
+    }
+  }
+
+  if (p) requestAnimationFrame(playbackLoop);
+}
+
+function playbackLoop() {
+  if (!state.playing) return;
+
+  const primary = primarySlot();
+  if (!primary) { state.playing = false; return; }
+
+  // Read where the primary video actually is, in ms-from-contact
+  const ms = msFromVideoTime(primary, state[primary].video.currentTime);
+  state.currentTimeMs = ms;
+
+  // Loop or stop at end of window
+  if (ms >= state.windowMs) {
+    // Loop
+    state.currentTimeMs = -state.windowMs;
+    for (const slot of ["a", "b"]) {
+      if (state[slot].ready) {
+        state[slot].video.currentTime = videoTimeFromMs(slot, state.currentTimeMs);
+      }
+    }
+  } else {
+    // Sync the secondary video's currentTime to match the primary's time-from-contact
+    for (const slot of ["a", "b"]) {
+      if (slot === primary) continue;
+      if (!state[slot].ready) continue;
+      const target = videoTimeFromMs(slot, ms);
+      // Only adjust if drift exceeds one frame
+      const tol = 1 / state[slot].data.metadata.fps;
+      if (Math.abs(state[slot].video.currentTime - target) > tol) {
+        state[slot].video.currentTime = target;
+      }
+    }
+  }
+
+  // Update slider and timecode (skeleton draw is handled by video frame events)
+  document.getElementById("scrubber").value = state.currentTimeMs;
+  updateTimecode();
+
+  requestAnimationFrame(playbackLoop);
+}
+
+function stepTime(deltaMs) {
+  // Always pause when stepping
+  if (state.playing) setPlaying(false);
+  state.currentTimeMs = Math.max(-state.windowMs,
+                                  Math.min(state.windowMs, state.currentTimeMs + deltaMs));
+  document.getElementById("scrubber").value = state.currentTimeMs;
+  render();
+}
+
+function updateTimecode() {
+  const ms = state.currentTimeMs;
+  const tc = document.getElementById("timecode");
+  document.getElementById("tc-sign").textContent = ms === 0 ? "" : (ms > 0 ? "+" : "−");
+  document.getElementById("tc-value").textContent = Math.abs(Math.round(ms));
+  tc.classList.toggle("at-contact", Math.abs(ms) < 5);
+}
+
+// ============================================================================
+// Wiring
+// ============================================================================
+for (const slot of ["a", "b"]) {
+  document.getElementById(`load-${slot}-video-btn`).addEventListener("click", () => {
+    document.getElementById(`load-${slot}-video`).click();
+  });
+  document.getElementById(`load-${slot}-video`).addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const video = await loadVideoFile(slot, file);
+      state[slot].video = video;
+      document.getElementById(`load-${slot}-video-btn`).textContent = "swap video";
+      document.getElementById(`load-${slot}-video-btn`).classList.add("loaded");
+      checkSlotReady(slot);
+    } catch (err) {
+      alert("Video load failed: " + err.message);
+    }
+  });
+  document.getElementById(`load-${slot}-json-btn`).addEventListener("click", () => {
+    document.getElementById(`load-${slot}-json`).click();
+  });
+  document.getElementById(`load-${slot}-json`).addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const data = await loadJsonFile(file);
+      state[slot].data = data;
+      document.getElementById(`load-${slot}-json-btn`).textContent = "swap json";
+      document.getElementById(`load-${slot}-json-btn`).classList.add("loaded");
+      checkSlotReady(slot);
+    } catch (err) {
+      alert("JSON load failed: " + err.message);
+    }
+  });
+}
+
+document.getElementById("scrubber").addEventListener("input", (e) => {
+  // If playing, pause when user grabs the slider
+  if (state.playing) setPlaying(false);
+  state.currentTimeMs = parseFloat(e.target.value);
+  render();
+});
+
+document.getElementById("play-pause").addEventListener("click", () => setPlaying(!state.playing));
+document.getElementById("step-back").addEventListener("click", () => stepTime(-16.67));
+document.getElementById("step-forward").addEventListener("click", () => stepTime(16.67));
+document.getElementById("reset").addEventListener("click", () => {
+  state.currentTimeMs = 0;
+  document.getElementById("scrubber").value = 0;
+  render();
+});
+document.getElementById("speed").addEventListener("change", (e) => {
+  state.playbackRate = parseFloat(e.target.value);
+  // If currently playing, apply to videos immediately
+  for (const slot of ["a", "b"]) {
+    if (state[slot].ready) state[slot].video.playbackRate = state.playbackRate;
+  }
+});
+document.getElementById("overlay-toggle").addEventListener("change", (e) => {
+  state.showOverlay = e.target.checked;
+  render();
+});
+document.getElementById("racquet-toggle").addEventListener("change", (e) => {
+  state.showRacquet = e.target.checked;
+  render();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  const big = e.shiftKey ? 100 : 16.67;
+  if (e.key === " ") { e.preventDefault(); if (!document.getElementById("play-pause").disabled) setPlaying(!state.playing); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); stepTime(-big); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); stepTime(big); }
+  else if (e.key === "0") { e.preventDefault(); state.currentTimeMs = 0;
+                            document.getElementById("scrubber").value = 0; render(); }
+});
+
+// Resize canvas when window resizes
+window.addEventListener("resize", () => {
+  for (const slot of ["a", "b"]) {
+    if (state[slot].video) {
+      resizeCanvas(slot);
+      if (state[slot].ready) drawSkeleton(slot);
+    }
+  }
+});
+
+// Per-frame skeleton redraw.
+// requestVideoFrameCallback fires once per actual video frame as it's about
+// to be displayed — exactly what we need to keep the skeleton in sync with
+// the video frames during playback. Falls back to timeupdate (less accurate,
+// fires ~4x/sec) on browsers that don't support rVFC yet.
+function attachFrameRedraw(slot) {
+  const video = document.getElementById(`video-${slot}`);
+
+  // Always redraw on a finished seek (manual scrub)
+  video.addEventListener("seeked", () => drawSkeleton(slot));
+
+  if (typeof video.requestVideoFrameCallback === "function") {
+    const cb = () => {
+      drawSkeleton(slot);
+      video.requestVideoFrameCallback(cb);
+    };
+    video.requestVideoFrameCallback(cb);
+  } else {
+    // Fallback: timeupdate (limited to ~4Hz, but better than nothing)
+    video.addEventListener("timeupdate", () => drawSkeleton(slot));
+  }
+}
+
+for (const slot of ["a", "b"]) {
+  attachFrameRedraw(slot);
+}
+</script>
+</body>
+</html>
