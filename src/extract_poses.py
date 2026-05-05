@@ -1,9 +1,9 @@
 """
 Extract per-frame body pose keypoints from a tennis video.
 
-Runs MediaPipe Pose on every frame of the input video and writes joint
-coordinates to JSON. Time is stored relative to a user-specified contact
-frame so that downstream alignment is straightforward.
+Runs MediaPipe Pose Landmarker (Tasks API) on every frame of the input video
+and writes joint coordinates to JSON. Time is stored relative to a user-specified
+contact frame so that downstream alignment is straightforward.
 
 Usage:
     python extract_poses.py VIDEO --contact-frame N [options]
@@ -14,6 +14,11 @@ Example:
         --player federer \\
         --output data/poses/federer_fh.json \\
         --debug-video
+
+Setup (one-time): download the pose model file:
+    mkdir -p models
+    curl -L -o models/pose_landmarker_heavy.task \\
+        https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task
 """
 from __future__ import annotations
 
@@ -24,11 +29,13 @@ from pathlib import Path
 
 import cv2  # opencv-python
 import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 
 
-# MediaPipe Pose returns 33 landmarks. We keep only the ones useful for
-# stroke comparison — head, shoulders, elbows, wrists, hips, knees, ankles.
-# Index reference: https://developers.google.com/mediapipe/solutions/vision/pose_landmarker
+# MediaPipe Pose Landmarker returns 33 landmarks. We keep only the ones useful for
+# stroke comparison. The Tasks API uses the same indexing as the old solutions API.
+# Index reference: https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker
 KEYPOINTS = {
     "nose": 0,
     "left_shoulder": 11,
@@ -61,6 +68,8 @@ SKELETON_EDGES = [
     ("right_knee", "right_ankle"),
 ]
 
+DEFAULT_MODEL_PATH = Path("models/pose_landmarker_heavy.task")
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -84,18 +93,22 @@ def parse_args() -> argparse.Namespace:
              "for visual verification that pose extraction worked.",
     )
     p.add_argument(
+        "--model", type=Path, default=DEFAULT_MODEL_PATH,
+        help=f"Path to pose_landmarker .task model file (default: {DEFAULT_MODEL_PATH})",
+    )
+    p.add_argument(
         "--min-detection-confidence", type=float, default=0.5,
-        help="MediaPipe min detection confidence (default 0.5)",
+        help="Min pose detection confidence (default 0.5)",
     )
     p.add_argument(
         "--min-tracking-confidence", type=float, default=0.5,
-        help="MediaPipe min tracking confidence (default 0.5)",
+        help="Min pose tracking confidence (default 0.5)",
     )
     return p.parse_args()
 
 
 def extract_landmarks(
-    landmarks_proto, frame_width: int, frame_height: int
+    pose_landmarks: list, frame_width: int, frame_height: int
 ) -> dict[str, dict[str, float]]:
     """Pull just our keypoints from the full 33-landmark output.
 
@@ -105,7 +118,7 @@ def extract_landmarks(
     """
     out = {}
     for name, idx in KEYPOINTS.items():
-        lm = landmarks_proto.landmark[idx]
+        lm = pose_landmarks[idx]
         out[name] = {
             "x": lm.x * frame_width,
             "y": lm.y * frame_height,
@@ -132,6 +145,30 @@ def draw_skeleton(frame, joints: dict[str, dict[str, float]]) -> None:
             continue
         cv2.circle(frame, (int(j["x"]), int(j["y"])), radius=4,
                    color=(0, 0, 255), thickness=-1)
+
+
+def build_landmarker(model_path: Path, min_detection: float, min_tracking: float):
+    """Construct a PoseLandmarker configured for video processing."""
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"Pose model not found at {model_path}.\n"
+            f"Download it with:\n"
+            f"  mkdir -p {model_path.parent}\n"
+            f"  curl -L -o {model_path} \\\n"
+            f"    https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+            f"pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task"
+        )
+
+    base_options = mp_python.BaseOptions(model_asset_path=str(model_path))
+    options = mp_vision.PoseLandmarkerOptions(
+        base_options=base_options,
+        running_mode=mp_vision.RunningMode.VIDEO,
+        num_poses=1,
+        min_pose_detection_confidence=min_detection,
+        min_tracking_confidence=min_tracking,
+        min_pose_presence_confidence=0.5,
+    )
+    return mp_vision.PoseLandmarker.create_from_options(options)
 
 
 def main() -> int:
@@ -179,14 +216,15 @@ def main() -> int:
         debug_writer = cv2.VideoWriter(str(debug_path), fourcc, fps, (width, height))
         print(f"  Debug video: {debug_path}")
 
-    # Initialize MediaPipe Pose. The `with` block ensures resources are freed.
-    pose = mp.solutions.pose.Pose(
-        static_image_mode=False,  # video mode enables temporal smoothing
-        model_complexity=2,        # 0=lite, 1=full, 2=heavy. Heavy is slower but more accurate.
-        enable_segmentation=False,
-        min_detection_confidence=args.min_detection_confidence,
-        min_tracking_confidence=args.min_tracking_confidence,
-    )
+    # Build landmarker
+    try:
+        landmarker = build_landmarker(
+            args.model, args.min_detection_confidence, args.min_tracking_confidence
+        )
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        cap.release()
+        return 1
 
     frames_data = []
     frame_idx = 0
@@ -198,13 +236,19 @@ def main() -> int:
             if not ok:
                 break
 
-            # MediaPipe expects RGB
+            # MediaPipe expects RGB; wrap as mp.Image
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            results = pose.process(frame_rgb)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+
+            # In VIDEO mode, the Tasks API requires a monotonically increasing
+            # timestamp in milliseconds. Derive it from frame index and fps.
+            timestamp_ms = int((frame_idx / fps) * 1000) if fps > 0 else frame_idx
+            result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
             joints = None
-            if results.pose_landmarks:
-                joints = extract_landmarks(results.pose_landmarks, width, height)
+            if result.pose_landmarks:
+                # pose_landmarks is a list of detections; we configured num_poses=1
+                joints = extract_landmarks(result.pose_landmarks[0], width, height)
             else:
                 missed_frames += 1
 
@@ -234,7 +278,7 @@ def main() -> int:
         cap.release()
         if debug_writer is not None:
             debug_writer.release()
-        pose.close()
+        landmarker.close()
 
     # Assemble output
     output = {

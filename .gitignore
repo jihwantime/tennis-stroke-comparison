@@ -22,3 +22,6 @@ Thumbs.db
 # Notebook outputs (optional — uncomment if you want to strip)
 # *.ipynb
 .DS_Store
+
+# Model files (downloaded separately, big)
+models/

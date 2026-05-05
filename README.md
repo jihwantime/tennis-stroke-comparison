@@ -16,6 +16,11 @@ I physcially cannot grasp the biomechanics of a serve so maybe this can help me 
 
 ```bash
 pip install -r requirements.txt
+
+# Download the pose model (one-time)
+mkdir -p models
+curl -L -o models/pose_landmarker_heavy.task \
+  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task
 ```
 
 ## Usage
