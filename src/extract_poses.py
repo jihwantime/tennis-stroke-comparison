@@ -84,6 +84,11 @@ def parse_args() -> argparse.Namespace:
         help="Player label saved in metadata (e.g. 'federer', 'me')",
     )
     p.add_argument(
+        "--handedness", type=str, choices=["right", "left"], default="right",
+        help="Which hand holds the racquet (default: right). The viewer "
+             "extends the racquet line from this wrist.",
+    )
+    p.add_argument(
         "--output", "-o", type=Path, default=None,
         help="Output JSON path (default: data/poses/<video_stem>.json)",
     )
@@ -285,6 +290,7 @@ def main() -> int:
         "metadata": {
             "source_video": str(args.video),
             "player": args.player,
+            "handedness": args.handedness,
             "fps": fps,
             "width": width,
             "height": height,
