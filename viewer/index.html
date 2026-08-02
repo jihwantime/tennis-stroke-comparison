@@ -283,10 +283,61 @@
     letter-spacing: 0.02em;
     color: var(--text);
     font-variant-numeric: tabular-nums;
+    text-align: right;
   }
   .timecode .sign { color: var(--muted); display: inline-block; width: 0.6em; }
+  /* Reserve room for the widest value we display, so adding or removing a
+     digit doesn't resize the timecode and shove the rest of the control bar
+     sideways. tabular-nums keeps every digit the same width. */
+  .timecode .value {
+    display: inline-block;
+    min-width: 4.5ch;
+    text-align: right;
+  }
   .timecode .unit { color: var(--muted); font-size: 11px; margin-left: 6px; letter-spacing: 0.1em; }
   .timecode.at-contact { color: var(--accent); }
+
+  /* ===== Extraction progress overlay ===== */
+  .extract-status {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: rgba(0,0,0,0.72);
+    backdrop-filter: blur(2px);
+    color: var(--text);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+  .extract-status.active { display: flex; }
+  .extract-status .msg { color: var(--muted); }
+  .extract-status .pct { font-size: 26px; font-weight: 500; letter-spacing: 0.02em; color: var(--text); font-variant-numeric: tabular-nums; }
+  .extract-bar {
+    width: 44%;
+    height: 2px;
+    background: var(--line);
+    position: relative;
+    overflow: hidden;
+  }
+  .extract-bar > span {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.1s linear;
+  }
+
+  .load-link.mark {
+    color: var(--accent);
+    opacity: 0.85;
+  }
+  .load-link.mark:hover { opacity: 1; }
 </style>
 </head>
 <body>
@@ -298,16 +349,23 @@
       <div class="load-controls">
         <button class="load-link" id="load-a-video-btn">load video</button>
         <input type="file" id="load-a-video" accept="video/*">
+        <button class="load-link mark" id="mark-a-btn" style="display:none">mark contact</button>
         <button class="load-link" id="load-a-json-btn">load json</button>
         <input type="file" id="load-a-json" accept=".json">
       </div>
       <div class="pane-content" id="content-a">
         <div class="empty-hint" id="empty-a">
-          <span class="step"><span class="num">1.</span>load video</span>
-          <span class="step"><span class="num">2.</span>load json</span>
+          <span class="step"><span class="num">1.</span>load a video</span>
+          <span class="step">poses extract automatically</span>
+          <span class="step"><span class="num">2.</span>scrub to impact, mark contact</span>
         </div>
         <video class="pane-video" id="video-a" muted playsinline preload="auto"></video>
         <canvas class="pane-canvas" id="canvas-a"></canvas>
+        <div class="extract-status" id="status-a">
+          <div class="msg" id="status-a-msg">loading model…</div>
+          <div class="pct" id="status-a-pct">0%</div>
+          <div class="extract-bar"><span id="status-a-bar"></span></div>
+        </div>
       </div>
     </div>
     <div class="player-pane b" id="pane-b">
@@ -315,16 +373,23 @@
       <div class="load-controls">
         <button class="load-link" id="load-b-video-btn">load video</button>
         <input type="file" id="load-b-video" accept="video/*">
+        <button class="load-link mark" id="mark-b-btn" style="display:none">mark contact</button>
         <button class="load-link" id="load-b-json-btn">load json</button>
         <input type="file" id="load-b-json" accept=".json">
       </div>
       <div class="pane-content" id="content-b">
         <div class="empty-hint" id="empty-b">
-          <span class="step"><span class="num">1.</span>load video</span>
-          <span class="step"><span class="num">2.</span>load json</span>
+          <span class="step"><span class="num">1.</span>load a video</span>
+          <span class="step">poses extract automatically</span>
+          <span class="step"><span class="num">2.</span>scrub to impact, mark contact</span>
         </div>
         <video class="pane-video" id="video-b" muted playsinline preload="auto"></video>
         <canvas class="pane-canvas" id="canvas-b"></canvas>
+        <div class="extract-status" id="status-b">
+          <div class="msg" id="status-b-msg">loading model…</div>
+          <div class="pct" id="status-b-pct">0%</div>
+          <div class="extract-bar"><span id="status-b-bar"></span></div>
+        </div>
       </div>
     </div>
   </div>
@@ -360,14 +425,211 @@
           <span class="swatch"></span>
           <span>racquet</span>
         </label>
+        <select class="speed-select" id="quality" title="pose model quality (applies to next extraction)">
+          <option value="lite">lite</option>
+          <option value="full" selected>full</option>
+          <option value="heavy">heavy</option>
+        </select>
         <div class="timecode" id="timecode">
-          <span class="sign" id="tc-sign"></span><span id="tc-value">0</span><span class="unit">ms</span>
+          <span class="sign" id="tc-sign"></span><span class="value" id="tc-value">0</span><span class="unit">ms</span>
         </div>
       </div>
     </div>
   </div>
 
 </div>
+
+<!-- ==========================================================================
+     In-browser pose extraction (MediaPipe Tasks Vision, WASM).
+     Replaces the offline src/extract_poses.py step: drop a video and the
+     skeleton is generated client-side. Runtime + model are vendored under
+     viewer/vendor and models/ so this works fully offline.
+     ========================================================================== -->
+<script type="module">
+import { FilesetResolver, PoseLandmarker } from "./vendor/vision_bundle.mjs";
+
+// Same 13 keypoints and MediaPipe indices as src/extract_poses.py
+const KEYPOINTS_IDX = {
+  nose: 0,
+  left_shoulder: 11, right_shoulder: 12,
+  left_elbow: 13, right_elbow: 14,
+  left_wrist: 15, right_wrist: 16,
+  left_hip: 23, right_hip: 24,
+  left_knee: 25, right_knee: 26,
+  left_ankle: 27, right_ankle: 28,
+};
+
+// Pose models are fetched from Google's MediaPipe storage rather than checked
+// into the repo (they total ~44MB). The WASM runtime in viewer/vendor is still
+// vendored, so only the model weights need the network.
+// To run fully offline, download them into models/ (see README) and swap these
+// for "../models/pose_landmarker_<quality>.task".
+const MODEL_CDN = "https://storage.googleapis.com/mediapipe-models/pose_landmarker";
+const MODEL_PATHS = {
+  lite:  `${MODEL_CDN}/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task`,
+  full:  `${MODEL_CDN}/pose_landmarker_full/float16/latest/pose_landmarker_full.task`,
+  heavy: `${MODEL_CDN}/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task`,
+};
+
+// Common capture rates we snap the estimated fps to.
+const COMMON_FPS = [24, 25, 30, 50, 60, 120, 240];
+
+let _filesetPromise = null;
+function getFileset() {
+  if (!_filesetPromise) _filesetPromise = FilesetResolver.forVisionTasks("vendor/wasm");
+  return _filesetPromise;
+}
+
+// Create a fresh landmarker per clip so pose tracking state doesn't bleed
+// between the two videos. GPU delegate when available, CPU fallback otherwise.
+async function makeLandmarker(quality) {
+  const fileset = await getFileset();
+  const modelAssetPath = MODEL_PATHS[quality] || MODEL_PATHS.full;
+  const opts = (delegate) => ({
+    baseOptions: { modelAssetPath, delegate },
+    runningMode: "VIDEO",
+    numPoses: 1,
+    minPoseDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+    minPosePresenceConfidence: 0.5,
+  });
+  try {
+    return await PoseLandmarker.createFromOptions(fileset, opts("GPU"));
+  } catch (e) {
+    console.warn("GPU delegate unavailable, using CPU:", e);
+    return await PoseLandmarker.createFromOptions(fileset, opts("CPU"));
+  }
+}
+
+// Seek to time t and resolve once the frame is ready. Resolves immediately if
+// already at t (setting currentTime to its current value fires no "seeked"),
+// and has a safety timeout so a missed event can't hang extraction.
+function seekTo(video, t) {
+  if (Math.abs(video.currentTime - t) < 1e-4) return Promise.resolve();
+  return new Promise((res) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; video.removeEventListener("seeked", finish); res(); };
+    video.addEventListener("seeked", finish);
+    video.currentTime = t;
+    setTimeout(finish, 2000);
+  });
+}
+
+// Estimate frame rate by watching a few real frames via requestVideoFrameCallback.
+async function probeFps(video) {
+  if (typeof video.requestVideoFrameCallback !== "function") return 30;
+  video.pause();
+  await seekTo(video, 0);
+  const times = [];
+  await new Promise((res) => {
+    let n = 0;
+    const timeout = setTimeout(() => { video.pause(); res(); }, 4000);
+    const cb = (_now, meta) => {
+      times.push(meta.mediaTime);
+      if (++n >= 30) { clearTimeout(timeout); video.pause(); res(); }
+      else video.requestVideoFrameCallback(cb);
+    };
+    video.requestVideoFrameCallback(cb);
+    video.play().catch(() => { clearTimeout(timeout); res(); });
+  });
+  // Use the SMALLEST gap between presented frames, not the median. When the
+  // compositor drops frames (throttled tab, busy page) the callback skips
+  // frames, which only ever inflates a gap — never shrinks it. So the minimum
+  // gap is the best estimate of the true frame interval, while a median gets
+  // dragged toward a multiple of it and badly underestimates fps.
+  const deltas = [];
+  for (let i = 1; i < times.length; i++) {
+    const d = times[i] - times[i - 1];
+    if (d > 2e-3) deltas.push(d); // 2ms floor: excludes spurious repeats, allows up to 500fps
+  }
+  if (!deltas.length) return 30;
+  let fps = Math.round(1 / Math.min(...deltas));
+  for (const c of COMMON_FPS) { if (Math.abs(fps - c) <= 2) { fps = c; break; } }
+  return Math.max(1, fps);
+}
+
+function jointsFromResult(res, w, h) {
+  if (!res.landmarks || !res.landmarks.length) return null;
+  const lms = res.landmarks[0];
+  const out = {};
+  for (const name in KEYPOINTS_IDX) {
+    const lm = lms[KEYPOINTS_IDX[name]];
+    out[name] = {
+      x: lm.x * w,
+      y: lm.y * h,
+      visibility: (lm.visibility ?? 1),
+    };
+  }
+  return out;
+}
+
+// Extract poses for every frame. Returns the same {metadata, frames} shape the
+// viewer already consumes, with contact defaulted to the middle frame (the
+// user refines it with "mark contact").
+async function extract(video, { quality = "full", player = "clip", handedness = "right", onProgress } = {}) {
+  const landmarker = await makeLandmarker(quality);
+  const w = video.videoWidth, h = video.videoHeight;
+  const fps = await probeFps(video);
+  const total = Math.max(1, Math.round(video.duration * fps));
+
+  const frames = [];
+  let lastTs = -1;
+  try {
+    for (let i = 0; i < total; i++) {
+      const target = Math.min(i / fps, Math.max(0, video.duration - 1e-3));
+      await seekTo(video, target);
+      // `duration` can overshoot the last real frame (containers often round
+      // up). Once seeking stops advancing we've run off the end — stop rather
+      // than recording duplicates of the final frame.
+      if (frames.length &&
+          Math.abs(video.currentTime - frames[frames.length - 1].video_time) < 1e-4) break;
+      // detectForVideo requires strictly increasing timestamps.
+      let ts = Math.round((i / fps) * 1000);
+      if (ts <= lastTs) ts = lastTs + 1;
+      lastTs = ts;
+      const res = landmarker.detectForVideo(video, ts);
+      frames.push({
+        frame_idx: i,
+        video_time: video.currentTime,
+        time_ms: 0, // filled in once contact is known
+        joints: jointsFromResult(res, w, h),
+      });
+      if (onProgress && (i % 2 === 0 || i === total - 1)) onProgress((i + 1) / total);
+    }
+  } finally {
+    landmarker.close();
+  }
+
+  // Time is measured from each frame's real video_time, not frame_idx/fps, so a
+  // slightly-off fps estimate can't skew alignment between two clips.
+  const contactFrame = Math.floor(frames.length / 2);
+  const contactT = frames[contactFrame].video_time;
+  for (const f of frames) f.time_ms = (f.video_time - contactT) * 1000;
+  const missed = frames.filter((f) => !f.joints).length;
+
+  return {
+    metadata: {
+      player,
+      handedness,
+      fps,
+      width: w,
+      height: h,
+      total_frames: frames.length,
+      contact_frame: contactFrame,
+      missed_frames: missed,
+      keypoints: Object.keys(KEYPOINTS_IDX),
+      source: "in-browser",
+    },
+    frames,
+  };
+}
+
+// Warm the WASM runtime + fileset ahead of first use.
+async function warm() { try { await getFileset(); } catch (_) {} }
+
+window.PoseExtractor = { extract, warm };
+window.dispatchEvent(new Event("pose-extractor-ready"));
+</script>
 
 <script>
 // ============================================================================
@@ -410,9 +672,22 @@ const state = {
   playing: false,
   playbackRate: 1.0,
   lastFrameTimestamp: null,
+  lastHardSeek: 0,
   showOverlay: true,
   showRacquet: true,
 };
+
+// --- Secondary-video sync tuning -------------------------------------------
+// The non-primary video is kept in step with the primary. Seeking it flushes
+// the decoder, so seeking every frame makes it stutter and eventually lock up
+// (each seek costs more time than the drift it corrects, so it never catches
+// up). Instead we nudge its playbackRate for small drift and only hard-seek
+// when it is genuinely far out, with a cooldown.
+const SYNC_DEADBAND_S = 0.04;      // below this, leave it alone
+const SYNC_HARD_S = 0.35;          // above this, hard seek
+const SYNC_HARD_COOLDOWN_MS = 800; // min gap between hard seeks
+const SYNC_MAX_RATE_ADJ = 0.15;    // cap rate correction at +/-15%
+const SYNC_GAIN = 2.0;             // rate adjust per second of drift
 
 // ============================================================================
 // Loading
@@ -513,14 +788,28 @@ function jointsAtTime(data, timeMs) {
   return Math.abs(timeMs - a.time_ms) <= Math.abs(timeMs - b.time_ms) ? a : b;
 }
 
+// A frame's absolute time in the source video, in seconds. In-browser
+// extraction records video_time directly; Python-generated JSON doesn't, so
+// fall back to frame_idx/fps for those (they're frame-exact anyway).
+function frameSeconds(data, frame) {
+  if (frame && frame.video_time !== undefined) return frame.video_time;
+  return frame.frame_idx / (data.metadata.fps || 30);
+}
+
+// Absolute video time of this clip's contact frame, in seconds.
+function contactSeconds(slot) {
+  const data = state[slot].data;
+  const frame = data.frames[data.metadata.contact_frame] || data.frames[0];
+  return frameSeconds(data, frame);
+}
+
 function syncVideo(slot) {
   const s = state[slot];
   if (!s.ready) return;
   const meta = s.data.metadata;
-  // The contact frame in the original video is at time (contact_frame / fps) seconds.
   // For a slider position of currentTimeMs, the corresponding video time is:
   //   contact_time + currentTimeMs/1000
-  const contactSec = meta.contact_frame / meta.fps;
+  const contactSec = contactSeconds(slot);
   const targetSec = contactSec + state.currentTimeMs / 1000;
   // Clamp into video bounds
   const clamped = Math.max(0, Math.min(s.video.duration || 1e9, targetSec));
@@ -707,24 +996,25 @@ function primarySlot() {
 
 function videoTimeFromMs(slot, ms) {
   // Convert ms-from-contact to absolute video time (seconds) for this slot.
-  const meta = state[slot].data.metadata;
-  return (meta.contact_frame / meta.fps) + ms / 1000;
+  return contactSeconds(slot) + ms / 1000;
 }
 
 function msFromVideoTime(slot, sec) {
-  const meta = state[slot].data.metadata;
-  return (sec - meta.contact_frame / meta.fps) * 1000;
+  return (sec - contactSeconds(slot)) * 1000;
 }
 
 function setPlaying(p) {
   state.playing = p;
   document.getElementById("play-pause").textContent = p ? "pause" : "play";
+  state.lastHardSeek = 0;
 
   for (const slot of ["a", "b"]) {
     const s = state[slot];
     if (!s.ready) continue;
+    // Always restore the true rate — the sync logic may have left the
+    // secondary running slightly fast or slow.
+    s.video.playbackRate = state.playbackRate;
     if (p) {
-      s.video.playbackRate = state.playbackRate;
       // Restart from beginning of window if we're at the end
       if (state.currentTimeMs >= state.windowMs - 5) {
         state.currentTimeMs = -state.windowMs;
@@ -739,6 +1029,34 @@ function setPlaying(p) {
   if (p) requestAnimationFrame(playbackLoop);
 }
 
+// Keep a secondary video in step with the primary without seek-thrashing it.
+function syncSecondary(slot, ms, now) {
+  const v = state[slot].video;
+  const base = state.playbackRate;
+  const drift = v.currentTime - videoTimeFromMs(slot, ms); // + = running ahead
+
+  if (Math.abs(drift) >= SYNC_HARD_S) {
+    // Genuinely out of sync (a stall, or the user jumped). Correct hard, but
+    // rate-limited — an uncooled seek loop is exactly what froze this pane.
+    if (now - state.lastHardSeek >= SYNC_HARD_COOLDOWN_MS) {
+      state.lastHardSeek = now;
+      v.playbackRate = base;
+      v.currentTime = videoTimeFromMs(slot, ms);
+    }
+    return;
+  }
+
+  if (Math.abs(drift) < SYNC_DEADBAND_S) {
+    if (v.playbackRate !== base) v.playbackRate = base;
+    return;
+  }
+
+  // Small drift: ease back by running slightly fast/slow. No decoder flush.
+  const adj = Math.max(-SYNC_MAX_RATE_ADJ, Math.min(SYNC_MAX_RATE_ADJ, -drift * SYNC_GAIN));
+  const rate = Math.max(0.0625, base * (1 + adj));
+  if (Math.abs(v.playbackRate - rate) > 1e-3) v.playbackRate = rate;
+}
+
 function playbackLoop() {
   if (!state.playing) return;
 
@@ -749,26 +1067,25 @@ function playbackLoop() {
   const ms = msFromVideoTime(primary, state[primary].video.currentTime);
   state.currentTimeMs = ms;
 
-  // Loop or stop at end of window
-  if (ms >= state.windowMs) {
-    // Loop
+  // Loop at end of window. Also loop if the primary clip simply ran out —
+  // otherwise its currentTime stops advancing, ms never reaches windowMs, and
+  // playback hangs with both panes frozen.
+  const now = performance.now();
+  if (ms >= state.windowMs || state[primary].video.ended) {
     state.currentTimeMs = -state.windowMs;
+    state.lastHardSeek = now;
     for (const slot of ["a", "b"]) {
-      if (state[slot].ready) {
-        state[slot].video.currentTime = videoTimeFromMs(slot, state.currentTimeMs);
+      if (!state[slot].ready) continue;
+      state[slot].video.playbackRate = state.playbackRate;
+      state[slot].video.currentTime = videoTimeFromMs(slot, state.currentTimeMs);
+      if (state[slot].video.paused) {
+        state[slot].video.play().catch(() => {});
       }
     }
   } else {
-    // Sync the secondary video's currentTime to match the primary's time-from-contact
     for (const slot of ["a", "b"]) {
-      if (slot === primary) continue;
-      if (!state[slot].ready) continue;
-      const target = videoTimeFromMs(slot, ms);
-      // Only adjust if drift exceeds one frame
-      const tol = 1 / state[slot].data.metadata.fps;
-      if (Math.abs(state[slot].video.currentTime - target) > tol) {
-        state[slot].video.currentTime = target;
-      }
+      if (slot === primary || !state[slot].ready) continue;
+      syncSecondary(slot, ms, now);
     }
   }
 
@@ -797,23 +1114,105 @@ function updateTimecode() {
 }
 
 // ============================================================================
+// Extraction helpers
+// ============================================================================
+function currentQuality() {
+  return document.getElementById("quality").value || "full";
+}
+
+function nameFromFilename(filename) {
+  // "novak_bh.mp4" -> "novak"; fall back to the stem.
+  const stem = filename.replace(/\.[^.]+$/, "");
+  return stem.split(/[_\-.]/)[0] || stem || "clip";
+}
+
+// Show/update the per-pane extraction overlay. `active` defaults to true so
+// progress updates (which omit it) keep the overlay up; hiding is explicit.
+function setExtractStatus(slot, msg, progress, active = true) {
+  const el = document.getElementById(`status-${slot}`);
+  el.classList.toggle("active", !!active);
+  if (msg !== undefined && msg !== "") document.getElementById(`status-${slot}-msg`).textContent = msg;
+  const pct = Math.round((progress || 0) * 100);
+  document.getElementById(`status-${slot}-pct`).textContent = pct + "%";
+  document.getElementById(`status-${slot}-bar`).style.width = pct + "%";
+}
+
+// Re-center a clip's timeline on a chosen contact frame and refresh the view.
+function setContactFrame(slot, contactFrame) {
+  const s = state[slot];
+  if (!s.data) return;
+  s.data.metadata.contact_frame = contactFrame;
+  const contactT = contactSeconds(slot);
+  for (const f of s.data.frames) {
+    f.time_ms = (frameSeconds(s.data, f) - contactT) * 1000;
+  }
+  state.currentTimeMs = 0;
+  updateTimeWindow();
+  document.getElementById("scrubber").value = 0;
+  render();
+}
+
+// Map this pane's current video time to its nearest extracted frame index.
+function currentFrameIndex(slot) {
+  const s = state[slot];
+  const vt = s.video.currentTime;
+  let best = 0, bestDist = Infinity;
+  for (let i = 0; i < s.data.frames.length; i++) {
+    const f = s.data.frames[i];
+    const d = Math.abs(frameSeconds(s.data, f) - vt);
+    if (d < bestDist) { bestDist = d; best = f.frame_idx; }
+  }
+  return best;
+}
+
+// Warm the runtime early so the first extraction isn't cold.
+window.addEventListener("pose-extractor-ready", () => window.PoseExtractor.warm());
+
+// ============================================================================
 // Wiring
 // ============================================================================
 for (const slot of ["a", "b"]) {
+  document.getElementById(`mark-${slot}-btn`).addEventListener("click", () => {
+    if (state.playing) setPlaying(false);
+    setContactFrame(slot, currentFrameIndex(slot));
+    const btn = document.getElementById(`mark-${slot}-btn`);
+    const prev = btn.textContent;
+    btn.textContent = "contact set ✓";
+    setTimeout(() => { btn.textContent = prev; }, 1200);
+  });
   document.getElementById(`load-${slot}-video-btn`).addEventListener("click", () => {
     document.getElementById(`load-${slot}-video`).click();
   });
   document.getElementById(`load-${slot}-video`).addEventListener("change", async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    const videoBtn = document.getElementById(`load-${slot}-video-btn`);
     try {
       const video = await loadVideoFile(slot, file);
       state[slot].video = video;
-      document.getElementById(`load-${slot}-video-btn`).textContent = "swap video";
-      document.getElementById(`load-${slot}-video-btn`).classList.add("loaded");
+      videoBtn.textContent = "swap video";
+      videoBtn.classList.add("loaded");
+
+      // Auto-extract poses in-browser. This replaces the old "load json" step.
+      if (!window.PoseExtractor) {
+        await new Promise((res) => window.addEventListener("pose-extractor-ready", res, { once: true }));
+      }
+      setExtractStatus(slot, "loading model…", 0, true);
+      const data = await window.PoseExtractor.extract(video, {
+        quality: currentQuality(),
+        player: nameFromFilename(file.name),
+        handedness: "right",
+        onProgress: (p) => setExtractStatus(slot, "extracting poses", p),
+      });
+      setExtractStatus(slot, "", 0, false);
+
+      state[slot].data = data;
+      document.getElementById(`mark-${slot}-btn`).style.display = "";
       checkSlotReady(slot);
     } catch (err) {
-      alert("Video load failed: " + err.message);
+      setExtractStatus(slot, "", 0, false);
+      alert("Extraction failed: " + err.message);
+      console.error(err);
     }
   });
   document.getElementById(`load-${slot}-json-btn`).addEventListener("click", () => {
@@ -827,6 +1226,7 @@ for (const slot of ["a", "b"]) {
       state[slot].data = data;
       document.getElementById(`load-${slot}-json-btn`).textContent = "swap json";
       document.getElementById(`load-${slot}-json-btn`).classList.add("loaded");
+      document.getElementById(`mark-${slot}-btn`).style.display = "";
       checkSlotReady(slot);
     } catch (err) {
       alert("JSON load failed: " + err.message);
