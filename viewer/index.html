@@ -459,10 +459,16 @@ const KEYPOINTS_IDX = {
   left_ankle: 27, right_ankle: 28,
 };
 
+// Pose models are fetched from Google's MediaPipe storage rather than checked
+// into the repo (they total ~44MB). The WASM runtime in viewer/vendor is still
+// vendored, so only the model weights need the network.
+// To run fully offline, download them into models/ (see README) and swap these
+// for "../models/pose_landmarker_<quality>.task".
+const MODEL_CDN = "https://storage.googleapis.com/mediapipe-models/pose_landmarker";
 const MODEL_PATHS = {
-  lite:  "../models/pose_landmarker_lite.task",
-  full:  "../models/pose_landmarker_full.task",
-  heavy: "../models/pose_landmarker_heavy.task",
+  lite:  `${MODEL_CDN}/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task`,
+  full:  `${MODEL_CDN}/pose_landmarker_full/float16/latest/pose_landmarker_full.task`,
+  heavy: `${MODEL_CDN}/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task`,
 };
 
 // Common capture rates we snap the estimated fps to.

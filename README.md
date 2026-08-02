@@ -2,6 +2,8 @@
 
 Stick-figure stroke comparisons for tennis. Could and should work for anything else that involves hitting something with a racket probably. 
 
+**[Try it →](https://jihwantime.github.io/tennis-stroke-comparison/viewer/index.html)** — drop in two mp4s, no install.
+
 ## Why
 
 I physcially cannot grasp the biomechanics of a serve so maybe this can help me with stuff like the racket drop. My backhand also sucks. 
@@ -21,19 +23,26 @@ the stick-figure overlay is generated automatically. No Python step is required.
 The old offline path (`src/extract_poses.py` → JSON, then `load json` in the viewer)
 still works and is handy for pre-computing poses, but is no longer necessary.
 
-### Runtime is vendored
+### Runtime and models
 
-The MediaPipe web runtime lives in `viewer/vendor/` and the pose models in `models/`,
-so extraction works fully offline (no CDN at runtime). A `lite` / `full` / `heavy`
-quality selector in the viewer trades speed for accuracy (`full` ≈ a minute for a
-few hundred frames; `lite` is noticeably faster).
+The MediaPipe WASM runtime is vendored in `viewer/vendor/`, so it needs no CDN. The
+pose model weights (~44MB across three qualities) are **not** in the repo — they're
+fetched from Google's MediaPipe storage on first use. A `lite` / `full` / `heavy`
+selector in the viewer trades speed for accuracy; accuracy matters most on fast,
+blurred frames like the racquet drop. It applies to the *next* video you load.
 
 ## Setup
 
-```bash
-pip install -r requirements.txt   # only needed for the optional offline scripts
+Nothing to install to use the viewer — just serve it (see Usage).
 
-# Download pose models (one-time; the viewer defaults to "full")
+```bash
+pip install -r requirements.txt   # only for the optional offline Python scripts
+```
+
+To run extraction **fully offline**, download the models locally and point
+`MODEL_PATHS` in `viewer/index.html` at `../models/...`:
+
+```bash
 mkdir -p models
 for q in lite full heavy; do
   curl -L -o models/pose_landmarker_$q.task \
