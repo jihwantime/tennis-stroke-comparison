@@ -8,38 +8,69 @@ I physcially cannot grasp the biomechanics of a serve so maybe this can help me 
 
 ## How it works
 
-1. **Extract** — `src/extract_poses.py` runs MediaPipe pose estimation on a video clip and writes joint coordinates per frame to JSON.
-2. **Normalize** — `src/normalize.py` re-centers each skeleton on its hip midpoint, scales by torso length so heights match, and re-indexes frames so contact = frame 0.
-3. **View** — `viewer/index.html` loads two normalized JSONs and renders both skeletons side by side with a synchronized slider centered on contact.
+The viewer now runs pose estimation **in the browser** — drop an mp4 into a pane and
+the stick-figure overlay is generated automatically. No Python step is required.
+
+1. **Drop a video** — `viewer/index.html` runs MediaPipe Pose Landmarker (WASM) on
+   every frame, client-side, and draws the skeleton + approximated racquet on top.
+2. **Mark contact** — scrub to the ball-contact frame in each pane and click
+   `mark contact`; that frame becomes time 0 so the two clips align on impact.
+3. **Compare** — both skeletons play side by side on a synchronized slider centered
+   on contact, down to 0.125× speed for the racquet-drop detail.
+
+The old offline path (`src/extract_poses.py` → JSON, then `load json` in the viewer)
+still works and is handy for pre-computing poses, but is no longer necessary.
+
+### Runtime is vendored
+
+The MediaPipe web runtime lives in `viewer/vendor/` and the pose models in `models/`,
+so extraction works fully offline (no CDN at runtime). A `lite` / `full` / `heavy`
+quality selector in the viewer trades speed for accuracy (`full` ≈ a minute for a
+few hundred frames; `lite` is noticeably faster).
 
 ## Setup
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt   # only needed for the optional offline scripts
 
-# Download the pose model (one-time)
+# Download pose models (one-time; the viewer defaults to "full")
 mkdir -p models
-curl -L -o models/pose_landmarker_heavy.task \
-  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task
+for q in lite full heavy; do
+  curl -L -o models/pose_landmarker_$q.task \
+    https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_$q/float16/latest/pose_landmarker_$q.task
+done
 ```
 
 ## Usage
 
-```bash
-# Extract poses from a video
-python src/extract_poses.py data/raw/federer_fh.mp4 --contact-frame 47 -o data/poses/federer_fh.json
+The viewer uses ES modules and WASM, so it **must be served over HTTP** — opening the
+file directly with `file://` will not work.
 
-# Open the viewer
-open viewer/index.html
+```bash
+# Serve the project root, then open the viewer
+python3 -m http.server 8000
+# → http://localhost:8000/viewer/index.html
+
+# Drop an mp4 into each pane; poses extract automatically.
+# Scrub to impact in each pane and click "mark contact" to align them.
+```
+
+### Optional: pre-compute poses offline
+
+```bash
+python src/extract_poses.py data/raw/federer_fh.mp4 --contact-frame 47 -o data/poses/federer_fh.json
+# then use "load json" in the viewer instead of re-extracting in the browser
 ```
 
 ## Roadmap
 
-- [ ] Pose extraction pipeline (MediaPipe)
-- [ ] Normalization (hip-center, torso-scale, contact-align)
-- [ ] Static side-by-side viewer
-- [ ] Synchronized slider with contact at center
-- [ ] Racquet approximation (extend from wrist)
+- [x] Pose extraction pipeline (MediaPipe)
+- [x] Static side-by-side viewer
+- [x] Synchronized slider with contact at center
+- [x] Racquet approximation (extend from wrist)
+- [x] In-browser extraction — drop an mp4, overlay is generated automatically
+- [x] In-viewer contact marking to align two clips
+- [ ] Normalization (hip-center, torso-scale, contact-align) wired into the viewer
 - [ ] Mirror toggle for opposite-handedness comparison
 - [ ] Trajectory overlays (racquet path, hip-shoulder separation)
 
